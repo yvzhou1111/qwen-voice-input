@@ -1,0 +1,9 @@
+# Linux
+sounddevice
+scipy
+numpy
+pynput
+torch
+transformers
+huggingface_hub
+qwen-asr

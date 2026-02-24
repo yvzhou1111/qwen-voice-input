@@ -1,0 +1,10 @@
+# Windows
+sounddevice
+scipy
+numpy
+pynput
+pywin32
+torch
+transformers
+huggingface_hub
+qwen-asr

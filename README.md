@@ -11,7 +11,7 @@
 ### Linux（Ubuntu / Debian / Arch / Fedora）
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/qwen-voice-input.git
+git clone https://github.com/yvzhou1111/qwen-voice-input.git
 cd qwen-voice-input
 chmod +x install.sh
 ./install.sh
@@ -22,7 +22,7 @@ chmod +x install.sh
 以管理员身份打开 PowerShell，运行：
 
 ```powershell
-git clone https://github.com/YOUR_USERNAME/qwen-voice-input.git
+git clone https://github.com/yvzhou1111/qwen-voice-input.git
 cd qwen-voice-input
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\install.ps1

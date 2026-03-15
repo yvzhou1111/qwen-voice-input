@@ -9,6 +9,24 @@ import gi
 gi.require_version("Atspi", "2.0")
 from gi.repository import Atspi
 
+TEXT_LIKE_ROLES = {
+    "entry",
+    "password text",
+    "text",
+    "terminal",
+    "document text",
+    "paragraph",
+}
+ROLE_BLACKLIST = {
+    "frame",
+    "panel",
+    "scroll pane",
+    "internal frame",
+    "document web",
+    "document frame",
+    "desktop frame",
+}
+
 
 def _state_contains(acc: Any, state: Any) -> bool:
     try:
@@ -126,6 +144,13 @@ def _extract_context(path):
                 has_text_iface = False
 
     focus_role = roles[-1] if roles else ""
+    focus_textish = focus_role in TEXT_LIKE_ROLES
+    focus_editable = False
+    try:
+        focus = path[-1]
+        focus_editable = _state_contains(focus, Atspi.StateType.EDITABLE)
+    except Exception:
+        focus_editable = False
     terminal_like = (
         ("terminal" in app_name)
         or ("gnome-terminal" in app_name)
@@ -140,6 +165,8 @@ def _extract_context(path):
         "window_title": window_title,
         "roles": roles,
         "focus_role": focus_role,
+        "textish": bool(focus_textish),
+        "focus_editable": bool(focus_editable),
         "terminal_like": bool(terminal_like),
         "editable": bool(editable),
         "has_text_iface": bool(has_text_iface),
@@ -170,11 +197,14 @@ def focus_info() -> int:
 
 def _find_editable_node(focused, path):
     for node in reversed(path):
+        role = _safe_role(node)
+        if role in ROLE_BLACKLIST:
+            continue
         try:
             editable_iface = node.get_editable_text_iface()
         except Exception:
             editable_iface = None
-        if editable_iface:
+        if editable_iface and (_state_contains(node, Atspi.StateType.EDITABLE) or role in TEXT_LIKE_ROLES):
             return node, editable_iface
 
     stack = [focused]
@@ -184,11 +214,16 @@ def _find_editable_node(focused, path):
         seen += 1
         if seen > 5000:
             break
+        role = _safe_role(node)
+        if role in ROLE_BLACKLIST:
+            for child in _iter_children(node):
+                stack.append(child)
+            continue
         try:
             editable_iface = node.get_editable_text_iface()
         except Exception:
             editable_iface = None
-        if editable_iface:
+        if editable_iface and (_state_contains(node, Atspi.StateType.EDITABLE) or role in TEXT_LIKE_ROLES):
             return node, editable_iface
         for child in _iter_children(node):
             stack.append(child)
@@ -281,4 +316,3 @@ def main(argv) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv))
-

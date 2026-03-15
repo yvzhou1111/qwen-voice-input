@@ -20,6 +20,8 @@ HOTKEY_HELPER_SRC="$REPO_DIR/hotkey_helper_linux.py"
 HOTKEY_HELPER_DST="/usr/local/bin/qwen-voice-input-hotkey-helper"
 HOTKEY_SERVICE_SRC="$REPO_DIR/systemd/qwen-voice-input-hotkey@.service"
 HOTKEY_SERVICE_DST="/etc/systemd/system/qwen-voice-input-hotkey@.service"
+YDOTOOLD_SERVICE_SRC="$REPO_DIR/systemd/qwen-voice-input-ydotoold.service"
+YDOTOOLD_SERVICE_DST="/etc/systemd/system/qwen-voice-input-ydotoold.service"
 SERVICE_DST="$HOME/.config/systemd/user/${SERVICE_NAME}.service"
 HEALTH_SERVICE_DST="$HOME/.config/systemd/user/${SERVICE_NAME}-health.service"
 HEALTH_TIMER_DST="$HOME/.config/systemd/user/${SERVICE_NAME}-health.timer"
@@ -50,7 +52,7 @@ install_deps() {
             info "安装系统依赖 (apt)..."
             sudo apt-get update -qq
             sudo apt-get install -y \
-                xdotool xclip x11-utils \
+                xdotool xclip x11-utils ydotool ydotoold \
                 portaudio19-dev python3-pip python3-venv \
                 python3-gi gir1.2-atspi-2.0 at-spi2-core \
                 python3-evdev
@@ -170,6 +172,13 @@ install_hotkey_service() {
     sudo systemctl enable --now "qwen-voice-input-hotkey@$(whoami).service"
 }
 
+install_ydotool_service() {
+    info "安装 ydotoold 回退输入服务..."
+    sudo install -m 0644 "$YDOTOOLD_SERVICE_SRC" "$YDOTOOLD_SERVICE_DST"
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now qwen-voice-input-ydotoold.service
+}
+
 install_healthcheck() {
     local python="$1"
     info "安装 healthcheck..."
@@ -279,6 +288,7 @@ RestartSec=30
 Environment=DISPLAY=:0
 Environment=PYTHONUNBUFFERED=1
 Environment=QWEN_VOICE_GUI_INPUT_MODE=auto
+Environment=QWEN_VOICE_YDOTOOL_SOCKET=/tmp/.ydotool_socket
 EnvironmentFile=-%h/.config/qwen-voice-input.env
 StandardOutput=journal
 StandardError=journal
@@ -348,6 +358,7 @@ main() {
     install_clipboard_history "$PYTHON"
     install_session_fixes "$PYTHON"
     install_hotkey_service
+    install_ydotool_service
     install_service "$PYTHON"
     verify
 }

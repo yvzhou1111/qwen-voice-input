@@ -21,7 +21,6 @@ import wave
 import numpy as np
 import sounddevice as sd
 import scipy.signal as sps
-from pynput import keyboard
 
 warnings.filterwarnings("ignore", message=".*RequestsDependencyWarning.*")
 
@@ -50,6 +49,10 @@ ATSPI_HELPER = os.environ.get(
     "QWEN_VOICE_ATSPI_HELPER",
     os.path.expanduser("~/.local/bin/qwen-voice-input-atspi"),
 ).strip()
+YDOTOOL_SOCKET = os.environ.get(
+    "QWEN_VOICE_YDOTOOL_SOCKET",
+    "/tmp/.ydotool_socket",
+).strip() or "/tmp/.ydotool_socket"
 # ──────────────────────────────────────────────────────
 
 logging.basicConfig(
@@ -58,6 +61,15 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)],
 )
 log = logging.getLogger(__name__)
+_PYNPUT_KEYBOARD = None
+
+
+def _keyboard_module():
+    global _PYNPUT_KEYBOARD
+    if _PYNPUT_KEYBOARD is None:
+        from pynput import keyboard as pynput_keyboard
+        _PYNPUT_KEYBOARD = pynput_keyboard
+    return _PYNPUT_KEYBOARD
 
 
 def _env():
@@ -85,6 +97,7 @@ def _write_heartbeat(payload=None):
 
 
 def _normalize_key(key):
+    keyboard = _keyboard_module()
     if key in {keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r}:
         return "ctrl"
     if key in {keyboard.Key.alt, keyboard.Key.alt_l, keyboard.Key.alt_r, keyboard.Key.alt_gr}:
@@ -199,6 +212,35 @@ def _atspi_insert(env, text):
         )
         return proc.returncode == 0
     except Exception:
+        return False
+
+
+def _type_with_ydotool(text, env):
+    if not shutil.which("ydotool"):
+        return False
+
+    safe_text = text.replace("\r", " ").replace("\n", " ").replace("\t", " ")
+    if not safe_text:
+        return True
+
+    env = {
+        **env,
+        "YDOTOOL_SOCKET": YDOTOOL_SOCKET,
+    }
+    try:
+        subprocess.run(
+            ["ydotool", "type", "--key-delay", "0", "--file", "-"],
+            input=safe_text,
+            text=True,
+            env=env,
+            timeout=10,
+            check=True,
+            capture_output=True,
+        )
+        log.info("已通过 ydotool 注入")
+        return True
+    except Exception as exc:
+        log.warning("ydotool 注入失败: %s", exc)
         return False
 
 
@@ -490,7 +532,10 @@ def type_text(text, target_window=None, target_context=None):
                 log.info("已通过 AT-SPI 注入")
                 return
 
-            raise RuntimeError("AT-SPI 注入失败 (焦点控件可能不支持 EditableText)")
+            if _type_with_ydotool(payload, env):
+                return
+
+            raise RuntimeError("Wayland 注入失败 (AT-SPI/ydotool 均未成功)")
 
         if not target_window:
             target_window = _active_x11_window_id(env) or ""
@@ -846,6 +891,7 @@ class VoiceInputDaemon:
             while True:
                 signal.pause()
         else:
+            keyboard = _keyboard_module()
             with keyboard.Listener(on_press=self._on_press, on_release=self._on_release) as listener:
                 log.info("就绪，快捷键: Ctrl+Alt+Space")
                 listener.join()

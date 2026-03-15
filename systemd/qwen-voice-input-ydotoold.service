@@ -1,0 +1,13 @@
+[Unit]
+Description=Qwen Voice Input ydotoold backend
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ydotoold
+ExecStartPost=/bin/sh -lc 'for i in $(seq 1 50); do [ -S /tmp/.ydotool_socket ] && chmod 666 /tmp/.ydotool_socket && exit 0; sleep 0.1; done; exit 1'
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

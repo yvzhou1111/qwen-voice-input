@@ -4,7 +4,9 @@
 
 - 完全本地运行，无需联网，无数据上传
 - 无弹窗，无痕输入
-- 支持 Linux（X11）和 Windows
+- 不使用剪贴板注入（不会污染剪贴板）
+- 支持 Linux（GNOME Wayland / X11）和 Windows
+- 可选远程后端（OpenAI-compatible / DashScope），用于替代本地模型
 
 ## 安装
 
@@ -41,7 +43,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
 | 平台 | 要求 |
 |------|------|
-| Linux | X11、xdotool、xclip、Python 3.10+ |
+| Linux | GNOME Wayland 或 X11、xdotool、python3-gi(at-spi2)、Python 3.10+ |
 | Windows | Windows 10/11、Python 3.10+ |
 | 通用 | 麦克风、4GB+ RAM |
 

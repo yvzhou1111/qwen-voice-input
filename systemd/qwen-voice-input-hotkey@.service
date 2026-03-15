@@ -1,0 +1,14 @@
+[Unit]
+Description=Qwen Voice Input global hotkey helper (%i)
+After=multi-user.target
+
+[Service]
+Type=simple
+Environment=QWEN_VOICE_USER=%i
+ExecStart=/usr/local/bin/qwen-voice-input-hotkey-helper
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+

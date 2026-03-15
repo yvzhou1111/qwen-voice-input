@@ -56,6 +56,11 @@ YDOTOOL_SOCKET = os.environ.get(
     "/tmp/.ydotool_socket",
 ).strip() or "/tmp/.ydotool_socket"
 TARGET_TTY_MAX_AGE = float(os.environ.get("QWEN_VOICE_TARGET_TTY_MAX_AGE", "1800"))
+TTY_INJECT_HELPER = os.environ.get(
+    "QWEN_VOICE_TTY_INJECT_HELPER",
+    "/usr/local/bin/qwen-voice-input-tty-inject",
+).strip() or "/usr/local/bin/qwen-voice-input-tty-inject"
+CODEX_TTY_CHAR_DELAY_MS = float(os.environ.get("QWEN_VOICE_CODEX_TTY_CHAR_DELAY_MS", "20"))
 # ──────────────────────────────────────────────────────
 
 logging.basicConfig(
@@ -558,6 +563,23 @@ def _inject_into_tty_name(tty_name, text):
     tty_index = _tty_index_from_name(tty_name)
     if tty_index is None:
         raise RuntimeError(f"不支持的 TTY: {tty_name}")
+
+    if _tty_foreground_is_codex(tty_name):
+        payload = base64.b64encode(text.encode("utf-8")).decode("ascii")
+        subprocess.run(
+            [
+                "sudo",
+                "-n",
+                TTY_INJECT_HELPER,
+                f"/dev/{tty_name}",
+                payload,
+                str(CODEX_TTY_CHAR_DELAY_MS),
+            ],
+            timeout=max(8, int(len(text) * max(CODEX_TTY_CHAR_DELAY_MS, 1) / 1000.0) + 5),
+            check=True,
+        )
+        log.info("已写入 Codex 终端 %s delay_ms=%s", tty_name, CODEX_TTY_CHAR_DELAY_MS)
+        return
 
     master_fds = _master_fd_by_tty_index(server_pid)
     master_fd = master_fds.get(tty_index)

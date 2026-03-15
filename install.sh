@@ -24,6 +24,8 @@ YDOTOOLD_SERVICE_SRC="$REPO_DIR/systemd/qwen-voice-input-ydotoold.service"
 YDOTOOLD_SERVICE_DST="/etc/systemd/system/qwen-voice-input-ydotoold.service"
 BIND_TERMINAL_SRC="$REPO_DIR/bind_terminal_linux.sh"
 BIND_TERMINAL_DST="$HOME/.local/bin/qwen-voice-input-bind-terminal"
+TTY_INJECT_SRC="$REPO_DIR/tty_inject_linux.py"
+TTY_INJECT_DST="/usr/local/bin/qwen-voice-input-tty-inject"
 SERVICE_DST="$HOME/.config/systemd/user/${SERVICE_NAME}.service"
 HEALTH_SERVICE_DST="$HOME/.config/systemd/user/${SERVICE_NAME}-health.service"
 HEALTH_TIMER_DST="$HOME/.config/systemd/user/${SERVICE_NAME}-health.timer"
@@ -171,6 +173,11 @@ install_terminal_bind_script() {
     mkdir -p "$HOME/.local/bin"
     cp "$BIND_TERMINAL_SRC" "$BIND_TERMINAL_DST"
     chmod +x "$BIND_TERMINAL_DST"
+}
+
+install_tty_inject_helper() {
+    info "安装终端 TTY 注入 helper..."
+    sudo install -m 0755 "$TTY_INJECT_SRC" "$TTY_INJECT_DST"
 }
 
 install_hotkey_service() {
@@ -364,6 +371,7 @@ main() {
     install_daemon "$PYTHON"
     install_atspi_helper
     install_terminal_bind_script
+    install_tty_inject_helper
     install_healthcheck "$PYTHON"
     install_clipboard_history "$PYTHON"
     install_session_fixes "$PYTHON"

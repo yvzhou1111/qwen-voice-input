@@ -45,6 +45,7 @@ SUPPORTED_SHELLS = {"bash", "zsh", "fish"}
 DEDICATED_TERMINAL_TITLE = "Qwen Voice Input"
 STATE_DIR = os.path.expanduser("~/.local/state/qwen-voice-input")
 HEARTBEAT_PATH = os.path.join(STATE_DIR, "heartbeat.json")
+TARGET_TTY_STATE_PATH = os.path.join(STATE_DIR, "target_tty")
 ATSPI_HELPER = os.environ.get(
     "QWEN_VOICE_ATSPI_HELPER",
     os.path.expanduser("~/.local/bin/qwen-voice-input-atspi"),
@@ -53,6 +54,7 @@ YDOTOOL_SOCKET = os.environ.get(
     "QWEN_VOICE_YDOTOOL_SOCKET",
     "/tmp/.ydotool_socket",
 ).strip() or "/tmp/.ydotool_socket"
+TARGET_TTY_MAX_AGE = float(os.environ.get("QWEN_VOICE_TARGET_TTY_MAX_AGE", "1800"))
 # ──────────────────────────────────────────────────────
 
 logging.basicConfig(
@@ -94,6 +96,24 @@ def _write_heartbeat(payload=None):
     with open(tmp, "w", encoding="utf-8") as handle:
         json.dump(body, handle, ensure_ascii=False)
     os.replace(tmp, HEARTBEAT_PATH)
+
+
+def _normalize_tty_name(tty_name):
+    value = (tty_name or "").strip()
+    if value.startswith("/dev/"):
+        value = value[len("/dev/"):]
+    return value
+
+
+def _runtime_target_tty():
+    try:
+        st = os.stat(TARGET_TTY_STATE_PATH)
+        if time.time() - st.st_mtime > TARGET_TTY_MAX_AGE:
+            return None
+        value = open(TARGET_TTY_STATE_PATH, "r", encoding="utf-8").read().strip()
+        return _normalize_tty_name(value) or None
+    except Exception:
+        return None
 
 
 def _normalize_key(key):
@@ -476,6 +496,39 @@ def _inject_into_terminal_by_pid(server_pid, window_title, text):
     log.info("已写入终端 pts/%s (%s)", shell["tty_index"], shell["cwd"] or "unknown")
 
 
+def _inject_into_tty_name(tty_name, text):
+    tty_name = _normalize_tty_name(tty_name)
+    if not tty_name:
+        raise RuntimeError("未配置目标 TTY")
+
+    shell_rows = [
+        row for row in _iter_process_rows()
+        if row.get("tty") == tty_name and row.get("comm") in SUPPORTED_SHELLS
+    ]
+    if not shell_rows:
+        raise RuntimeError(f"未找到绑定到 {tty_name} 的 shell")
+
+    shell_rows.sort(key=lambda row: row["pid"])
+    shell_row = shell_rows[0]
+    server_pid = int(shell_row["ppid"])
+    tty_index = _tty_index_from_name(tty_name)
+    if tty_index is None:
+        raise RuntimeError(f"不支持的 TTY: {tty_name}")
+
+    master_fds = _master_fd_by_tty_index(server_pid)
+    master_fd = master_fds.get(tty_index)
+    if master_fd is None:
+        raise RuntimeError(f"无法定位 {tty_name} 对应的终端主设备")
+
+    payload = text.replace("\r", " ").replace("\n", " ").replace("\t", " ")
+    fd = os.open(f"/proc/{server_pid}/fd/{master_fd}", os.O_WRONLY | os.O_NONBLOCK)
+    try:
+        os.write(fd, payload.encode("utf-8"))
+    finally:
+        os.close(fd)
+    log.info("已写入绑定终端 %s", tty_name)
+
+
 def _inject_into_gnome_terminal(window_id, text, env):
     server_pid = _run(["xdotool", "getwindowpid", str(window_id)], env=env).stdout.strip()
     if not server_pid:
@@ -521,12 +574,29 @@ def type_text(text, target_window=None, target_context=None):
                 return
 
             ctx = target_context or _atspi_focus_info(env) or {}
+            runtime_tty = _runtime_target_tty()
             if ctx.get("terminal_like") and ctx.get("pid"):
                 try:
                     _inject_into_terminal_by_pid(int(ctx["pid"]), ctx.get("window_title") or "", payload)
                     return
                 except Exception as e:
                     log.warning("Wayland 终端直写失败: %s", e)
+
+            if runtime_tty and (ctx.get("terminal_like") or not ctx):
+                try:
+                    _inject_into_tty_name(runtime_tty, payload)
+                    return
+                except Exception as e:
+                    log.warning("绑定终端直写失败: %s", e)
+
+            # AT-SPI sometimes reports non-text widgets for terminal tabs under Wayland.
+            # If a recent bound TTY exists, prefer writing there before declaring failure.
+            if runtime_tty and not ctx.get("focus_editable") and not ctx.get("textish"):
+                try:
+                    _inject_into_tty_name(runtime_tty, payload)
+                    return
+                except Exception as e:
+                    log.warning("绑定终端直写失败: %s", e)
 
             if ctx and not ctx.get("terminal_like") and not ctx.get("focus_editable") and not ctx.get("textish"):
                 raise RuntimeError(

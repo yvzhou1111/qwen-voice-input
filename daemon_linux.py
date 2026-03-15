@@ -528,6 +528,11 @@ def type_text(text, target_window=None, target_context=None):
                 except Exception as e:
                     log.warning("Wayland 终端直写失败: %s", e)
 
+            if ctx and not ctx.get("terminal_like") and not ctx.get("focus_editable") and not ctx.get("textish"):
+                raise RuntimeError(
+                    f"当前焦点不是输入框 (app={ctx.get('app_name')}, role={ctx.get('focus_role')})"
+                )
+
             if _atspi_insert(env, payload):
                 log.info("已通过 AT-SPI 注入")
                 return

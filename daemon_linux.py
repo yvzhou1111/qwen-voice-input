@@ -9,6 +9,7 @@ import io
 import json
 import logging
 import os
+import re
 import shutil
 import signal
 import socket
@@ -196,6 +197,14 @@ def _active_x11_window_id(env):
         return None
 
 
+def _window_pid(window_id, env):
+    try:
+        pid = _run(["xdotool", "getwindowpid", str(window_id)], env=env, timeout=2).stdout.strip()
+        return int(pid) if pid else None
+    except Exception:
+        return None
+
+
 def _atspi_focus_info(env):
     helper_path = os.path.expanduser(ATSPI_HELPER) if ATSPI_HELPER else ""
     if not helper_path or not os.path.exists(helper_path):
@@ -289,6 +298,23 @@ def _iter_process_rows():
         except ValueError:
             continue
     return rows
+
+
+def _proc_environ(pid):
+    try:
+        raw = open(f"/proc/{pid}/environ", "rb").read()
+    except Exception:
+        return {}
+    env = {}
+    for item in raw.split(b"\0"):
+        if not item or b"=" not in item:
+            continue
+        key, value = item.split(b"=", 1)
+        try:
+            env[key.decode("utf-8", errors="ignore")] = value.decode("utf-8", errors="ignore")
+        except Exception:
+            continue
+    return env
 
 
 def _descendants(root_pid):
@@ -529,6 +555,80 @@ def _inject_into_tty_name(tty_name, text):
     log.info("已写入绑定终端 %s", tty_name)
 
 
+def _gnome_terminal_screen_tty_map():
+    mapping = {}
+    for row in _iter_process_rows():
+        tty_name = row.get("tty") or ""
+        if row.get("comm") not in SUPPORTED_SHELLS or not tty_name.startswith("pts/"):
+            continue
+        env = _proc_environ(row["pid"])
+        screen_path = env.get("GNOME_TERMINAL_SCREEN", "").strip()
+        if screen_path:
+            mapping[screen_path] = tty_name
+    return mapping
+
+
+def _gnome_terminal_screens(env):
+    try:
+        output = _run(
+            [
+                "gdbus",
+                "call",
+                "--session",
+                "--dest",
+                "org.gnome.Terminal",
+                "--object-path",
+                "/org/gnome/Terminal",
+                "--method",
+                "org.freedesktop.DBus.ObjectManager.GetManagedObjects",
+            ],
+            env=env,
+            timeout=3,
+        ).stdout
+    except Exception:
+        return []
+    return re.findall(r"/org/gnome/Terminal/screen/[A-Za-z0-9_]+", output)
+
+
+def _gnome_terminal_active_tab_index(env):
+    try:
+        output = _run(
+            [
+                "gdbus",
+                "call",
+                "--session",
+                "--dest",
+                "org.gnome.Terminal",
+                "--object-path",
+                "/org/gnome/Terminal/window/1",
+                "--method",
+                "org.gtk.Actions.Describe",
+                "active-tab",
+            ],
+            env=env,
+            timeout=3,
+        ).stdout
+    except Exception:
+        return None
+    match = re.search(r"<(-?\d+)>", output)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def _gnome_terminal_active_tty(env):
+    tab_index = _gnome_terminal_active_tab_index(env)
+    if tab_index is None or tab_index < 0:
+        return None
+    screens = _gnome_terminal_screens(env)
+    if tab_index >= len(screens):
+        return None
+    return _gnome_terminal_screen_tty_map().get(screens[tab_index])
+
+
 def _inject_into_gnome_terminal(window_id, text, env):
     server_pid = _run(["xdotool", "getwindowpid", str(window_id)], env=env).stdout.strip()
     if not server_pid:
@@ -560,23 +660,15 @@ def type_text(text, target_window=None, target_context=None):
         return
     try:
         if _session_type() == "wayland":
-            active_x11_window = _active_x11_window_id(env)
-            if active_x11_window:
-                win_name = _window_name(active_x11_window, env).lower()
-                win_classes = _window_class(active_x11_window, env)
-                log.info("目标窗口(X11): %s classes=%s", win_name, ",".join(win_classes) or "unknown")
-                is_terminal = _is_terminal_window(active_x11_window, env)
-                is_gnome_terminal = any(token in win_classes for token in ["gnome-terminal", "gnome-terminal-server"])
-                if is_terminal and is_gnome_terminal:
-                    _inject_into_gnome_terminal(active_x11_window, payload, env)
-                else:
-                    _type_with_xdotool(active_x11_window, payload, env)
-                return
-
             ctx = target_context or _atspi_focus_info(env) or {}
             runtime_tty = _runtime_target_tty()
             if ctx.get("terminal_like") and ctx.get("pid"):
                 try:
+                    active_terminal_tty = _gnome_terminal_active_tty(env)
+                    if active_terminal_tty:
+                        log.info("Wayland 终端焦点映射到活动 TTY: %s", active_terminal_tty)
+                        _inject_into_tty_name(active_terminal_tty, payload)
+                        return
                     _inject_into_terminal_by_pid(int(ctx["pid"]), ctx.get("window_title") or "", payload)
                     return
                 except Exception as e:
@@ -584,6 +676,7 @@ def type_text(text, target_window=None, target_context=None):
 
             if runtime_tty and (ctx.get("terminal_like") or not ctx):
                 try:
+                    log.info("Wayland 终端兜底使用绑定 TTY: %s", runtime_tty)
                     _inject_into_tty_name(runtime_tty, payload)
                     return
                 except Exception as e:
@@ -593,10 +686,29 @@ def type_text(text, target_window=None, target_context=None):
             # If a recent bound TTY exists, prefer writing there before declaring failure.
             if runtime_tty and not ctx.get("focus_editable") and not ctx.get("textish"):
                 try:
+                    log.info("Wayland 非文本焦点，回退到绑定 TTY: %s", runtime_tty)
                     _inject_into_tty_name(runtime_tty, payload)
                     return
                 except Exception as e:
                     log.warning("绑定终端直写失败: %s", e)
+
+            active_x11_window = _active_x11_window_id(env)
+            if active_x11_window:
+                active_x11_pid = _window_pid(active_x11_window, env)
+                # On Wayland, xdotool only sees Xwayland apps. Only trust it if it
+                # matches the accessibility focus, otherwise it may point at an
+                # unrelated stale X11 window and steal terminal input.
+                if not ctx or not ctx.get("pid") or active_x11_pid == int(ctx.get("pid") or 0):
+                    win_name = _window_name(active_x11_window, env).lower()
+                    win_classes = _window_class(active_x11_window, env)
+                    log.info("目标窗口(X11): %s classes=%s", win_name, ",".join(win_classes) or "unknown")
+                    is_terminal = _is_terminal_window(active_x11_window, env)
+                    is_gnome_terminal = any(token in win_classes for token in ["gnome-terminal", "gnome-terminal-server"])
+                    if is_terminal and is_gnome_terminal:
+                        _inject_into_gnome_terminal(active_x11_window, payload, env)
+                    else:
+                        _type_with_xdotool(active_x11_window, payload, env)
+                    return
 
             if ctx and not ctx.get("terminal_like") and not ctx.get("focus_editable") and not ctx.get("textish"):
                 raise RuntimeError(

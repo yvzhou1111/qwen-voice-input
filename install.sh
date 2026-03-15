@@ -22,6 +22,8 @@ HOTKEY_SERVICE_SRC="$REPO_DIR/systemd/qwen-voice-input-hotkey@.service"
 HOTKEY_SERVICE_DST="/etc/systemd/system/qwen-voice-input-hotkey@.service"
 YDOTOOLD_SERVICE_SRC="$REPO_DIR/systemd/qwen-voice-input-ydotoold.service"
 YDOTOOLD_SERVICE_DST="/etc/systemd/system/qwen-voice-input-ydotoold.service"
+BIND_TERMINAL_SRC="$REPO_DIR/bind_terminal_linux.sh"
+BIND_TERMINAL_DST="$HOME/.local/bin/qwen-voice-input-bind-terminal"
 SERVICE_DST="$HOME/.config/systemd/user/${SERVICE_NAME}.service"
 HEALTH_SERVICE_DST="$HOME/.config/systemd/user/${SERVICE_NAME}-health.service"
 HEALTH_TIMER_DST="$HOME/.config/systemd/user/${SERVICE_NAME}-health.timer"
@@ -162,6 +164,13 @@ install_atspi_helper() {
     cp "$ATSPI_HELPER_SRC" "$ATSPI_HELPER_DST"
     chmod +x "$ATSPI_HELPER_DST"
     info "AT-SPI helper 已安装到 $ATSPI_HELPER_DST"
+}
+
+install_terminal_bind_script() {
+    info "安装终端绑定脚本..."
+    mkdir -p "$HOME/.local/bin"
+    cp "$BIND_TERMINAL_SRC" "$BIND_TERMINAL_DST"
+    chmod +x "$BIND_TERMINAL_DST"
 }
 
 install_hotkey_service() {
@@ -354,6 +363,7 @@ main() {
     prefetch_model "$PYTHON"
     install_daemon "$PYTHON"
     install_atspi_helper
+    install_terminal_bind_script
     install_healthcheck "$PYTHON"
     install_clipboard_history "$PYTHON"
     install_session_fixes "$PYTHON"

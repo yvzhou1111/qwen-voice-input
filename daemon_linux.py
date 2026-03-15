@@ -715,7 +715,19 @@ def type_text(text, target_window=None, target_context=None):
                 except Exception as e:
                     log.warning("Wayland 终端直写失败: %s", e)
 
-            if active_terminal_has_codex:
+            if ctx.get("focus_editable") or ctx.get("textish") or ctx.get("editable"):
+                if _atspi_insert(env, payload):
+                    log.info("已通过 AT-SPI 注入")
+                    return
+
+                if _type_with_ydotool(payload, env):
+                    return
+
+                raise RuntimeError(
+                    f"当前焦点看起来像输入框，但注入失败 (app={ctx.get('app_name')}, role={ctx.get('focus_role')})"
+                )
+
+            if active_terminal_has_codex and (ctx.get("terminal_like") or not ctx):
                 try:
                     log.info("Wayland 检测到活动 Codex 终端，优先使用 TTY: %s", active_terminal_tty)
                     _inject_into_tty_name(active_terminal_tty, payload)
@@ -763,15 +775,7 @@ def type_text(text, target_window=None, target_context=None):
                 raise RuntimeError(
                     f"当前焦点不是输入框 (app={ctx.get('app_name')}, role={ctx.get('focus_role')})"
                 )
-
-            if _atspi_insert(env, payload):
-                log.info("已通过 AT-SPI 注入")
-                return
-
-            if _type_with_ydotool(payload, env):
-                return
-
-            raise RuntimeError("Wayland 注入失败 (AT-SPI/ydotool 均未成功)")
+            raise RuntimeError("Wayland 注入失败 (无法确认焦点输入目标)")
 
         if not target_window:
             target_window = _active_x11_window_id(env) or ""

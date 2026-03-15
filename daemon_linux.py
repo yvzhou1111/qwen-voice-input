@@ -274,23 +274,20 @@ def _type_with_ydotool(text, env):
 
 
 def _iter_process_rows():
-    output = _run(["ps", "-eo", "pid=,ppid=,tty=,comm=,args="], timeout=5).stdout
+    output = _run(["ps", "-eo", "pid=,ppid=,pgid=,tpgid=,tty=,comm=,args="], timeout=5).stdout
     rows = []
     for line in output.splitlines():
-        parts = line.strip().split(None, 4)
-        if len(parts) < 4:
+        parts = line.strip().split(None, 6)
+        if len(parts) < 6:
             continue
-        pid, ppid, tty, comm = parts[:4]
-        args = parts[4] if len(parts) > 4 else comm
+        pid, ppid, pgid, tpgid, tty, comm = parts[:6]
+        args = parts[6] if len(parts) > 6 else comm
         try:
-            stat = _run(["ps", "-o", "pgid=,tpgid=", "-p", pid], timeout=3).stdout.strip().split()
-            pgid = int(stat[0]) if len(stat) > 0 else -1
-            tpgid = int(stat[1]) if len(stat) > 1 else -1
             rows.append({
                 "pid": int(pid),
                 "ppid": int(ppid),
-                "pgid": pgid,
-                "tpgid": tpgid,
+                "pgid": int(pgid),
+                "tpgid": int(tpgid),
                 "tty": tty,
                 "comm": comm,
                 "args": args,
@@ -298,6 +295,27 @@ def _iter_process_rows():
         except ValueError:
             continue
     return rows
+
+
+def _foreground_rows_for_tty(tty_name):
+    rows = [row for row in _iter_process_rows() if row.get("tty") == tty_name]
+    if not rows:
+        return []
+    tpgids = {row.get("tpgid") for row in rows if row.get("tpgid", -1) > 0}
+    if not tpgids:
+        return []
+    return [row for row in rows if row.get("pgid") in tpgids]
+
+
+def _tty_foreground_is_codex(tty_name):
+    for row in _foreground_rows_for_tty(tty_name):
+        comm = (row.get("comm") or "").lower()
+        args = (row.get("args") or "").lower()
+        if comm == "codex":
+            return True
+        if comm == "node" and "/bin/codex" in args:
+            return True
+    return False
 
 
 def _proc_environ(pid):
@@ -662,9 +680,10 @@ def type_text(text, target_window=None, target_context=None):
         if _session_type() == "wayland":
             ctx = target_context or _atspi_focus_info(env) or {}
             runtime_tty = _runtime_target_tty()
+            active_terminal_tty = _gnome_terminal_active_tty(env)
+            active_terminal_has_codex = bool(active_terminal_tty and _tty_foreground_is_codex(active_terminal_tty))
             if ctx.get("terminal_like") and ctx.get("pid"):
                 try:
-                    active_terminal_tty = _gnome_terminal_active_tty(env)
                     if active_terminal_tty:
                         log.info("Wayland 终端焦点映射到活动 TTY: %s", active_terminal_tty)
                         _inject_into_tty_name(active_terminal_tty, payload)
@@ -673,6 +692,14 @@ def type_text(text, target_window=None, target_context=None):
                     return
                 except Exception as e:
                     log.warning("Wayland 终端直写失败: %s", e)
+
+            if active_terminal_has_codex:
+                try:
+                    log.info("Wayland 检测到活动 Codex 终端，优先使用 TTY: %s", active_terminal_tty)
+                    _inject_into_tty_name(active_terminal_tty, payload)
+                    return
+                except Exception as e:
+                    log.warning("活动 Codex 终端直写失败: %s", e)
 
             if runtime_tty and (ctx.get("terminal_like") or not ctx):
                 try:

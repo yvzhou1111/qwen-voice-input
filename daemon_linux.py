@@ -716,11 +716,11 @@ def type_text(text, target_window=None, target_context=None):
                     log.warning("Wayland 终端直写失败: %s", e)
 
             if ctx.get("focus_editable") or ctx.get("textish") or ctx.get("editable"):
-                if _atspi_insert(env, payload):
-                    log.info("已通过 AT-SPI 注入")
+                if _type_with_ydotool(payload, env):
                     return
 
-                if _type_with_ydotool(payload, env):
+                if _atspi_insert(env, payload):
+                    log.info("已通过 AT-SPI 注入")
                     return
 
                 raise RuntimeError(

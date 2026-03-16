@@ -282,6 +282,28 @@ def _type_with_ydotool(text, env):
         return False
 
 
+def _type_with_wtype(text, env):
+    if not shutil.which("wtype"):
+        return False
+    safe_text = text.replace("\r", " ").replace("\n", " ").replace("\t", " ")
+    if not safe_text:
+        return True
+    try:
+        subprocess.run(
+            ["wtype", "-d", "0", safe_text],
+            env=env,
+            timeout=10,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        log.info("已通过 wtype 注入")
+        return True
+    except Exception as exc:
+        log.warning("wtype 注入失败: %s", exc)
+        return False
+
+
 def _iter_process_rows():
     output = _run(["ps", "-eo", "pid=,ppid=,pgid=,tpgid=,tty=,comm=,args="], timeout=5).stdout
     rows = []
@@ -702,6 +724,7 @@ def type_text(text, target_window=None, target_context=None):
     payload = text.replace("\r", " ").replace("\n", " ").replace("\t", " ")
     if not payload.strip():
         return
+    ascii_only = all(ord(ch) < 128 for ch in payload)
     try:
         if _session_type() == "wayland":
             ctx = target_context or _atspi_focus_info(env) or {}
@@ -721,22 +744,15 @@ def type_text(text, target_window=None, target_context=None):
                     log.warning("Wayland 终端直写失败: %s", e)
 
             if not ignored_focus and ctx and not ctx.get("terminal_like"):
-                if _type_with_ydotool(payload, env):
+                if _type_with_wtype(payload, env):
                     return
 
                 if (ctx.get("focus_editable") or ctx.get("textish") or ctx.get("editable")) and _atspi_insert(env, payload):
                     log.info("已通过 AT-SPI 注入")
                     return
 
-                active_x11_window = _active_x11_window_id(env)
-                if active_x11_window:
-                    active_x11_pid = _window_pid(active_x11_window, env)
-                    if not ctx.get("pid") or active_x11_pid == int(ctx.get("pid") or 0):
-                        win_name = _window_name(active_x11_window, env).lower()
-                        win_classes = _window_class(active_x11_window, env)
-                        log.info("目标窗口(X11 fallback): %s classes=%s", win_name, ",".join(win_classes) or "unknown")
-                        _type_with_xdotool(active_x11_window, payload, env)
-                        return
+                if ascii_only and _type_with_ydotool(payload, env):
+                    return
 
                 raise RuntimeError(
                     f"Wayland GUI 焦点注入失败 (app={ctx.get('app_name')}, role={ctx.get('focus_role')})"

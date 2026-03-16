@@ -61,6 +61,10 @@ TTY_INJECT_HELPER = os.environ.get(
     "/usr/local/bin/qwen-voice-input-tty-inject",
 ).strip() or "/usr/local/bin/qwen-voice-input-tty-inject"
 CODEX_TTY_CHAR_DELAY_MS = float(os.environ.get("QWEN_VOICE_CODEX_TTY_CHAR_DELAY_MS", "20"))
+IGNORED_FOCUS_APPS = {
+    "qwen-clipboard-history",
+    "cc-switch",
+}
 # ──────────────────────────────────────────────────────
 
 logging.basicConfig(
@@ -701,6 +705,7 @@ def type_text(text, target_window=None, target_context=None):
     try:
         if _session_type() == "wayland":
             ctx = target_context or _atspi_focus_info(env) or {}
+            ignored_focus = (ctx.get("app_name") or "").lower() in IGNORED_FOCUS_APPS
             runtime_tty = _runtime_target_tty()
             active_terminal_tty = _gnome_terminal_active_tty(env)
             active_terminal_has_codex = bool(active_terminal_tty and _tty_foreground_is_codex(active_terminal_tty))
@@ -715,7 +720,7 @@ def type_text(text, target_window=None, target_context=None):
                 except Exception as e:
                     log.warning("Wayland 终端直写失败: %s", e)
 
-            if ctx.get("focus_editable") or ctx.get("textish") or ctx.get("editable"):
+            if not ignored_focus and (ctx.get("focus_editable") or ctx.get("textish") or ctx.get("editable")):
                 if _type_with_ydotool(payload, env):
                     return
 
@@ -727,7 +732,7 @@ def type_text(text, target_window=None, target_context=None):
                     f"当前焦点看起来像输入框，但注入失败 (app={ctx.get('app_name')}, role={ctx.get('focus_role')})"
                 )
 
-            if active_terminal_has_codex and (ctx.get("terminal_like") or not ctx):
+            if active_terminal_has_codex and (ctx.get("terminal_like") or not ctx or ignored_focus):
                 try:
                     log.info("Wayland 检测到活动 Codex 终端，优先使用 TTY: %s", active_terminal_tty)
                     _inject_into_tty_name(active_terminal_tty, payload)
@@ -735,7 +740,7 @@ def type_text(text, target_window=None, target_context=None):
                 except Exception as e:
                     log.warning("活动 Codex 终端直写失败: %s", e)
 
-            if runtime_tty and (ctx.get("terminal_like") or not ctx):
+            if runtime_tty and (ctx.get("terminal_like") or not ctx or ignored_focus):
                 try:
                     log.info("Wayland 终端兜底使用绑定 TTY: %s", runtime_tty)
                     _inject_into_tty_name(runtime_tty, payload)
@@ -745,7 +750,7 @@ def type_text(text, target_window=None, target_context=None):
 
             # AT-SPI sometimes reports non-text widgets for terminal tabs under Wayland.
             # If a recent bound TTY exists, prefer writing there before declaring failure.
-            if runtime_tty and not ctx.get("focus_editable") and not ctx.get("textish"):
+            if runtime_tty and (ignored_focus or (not ctx.get("focus_editable") and not ctx.get("textish"))):
                 try:
                     log.info("Wayland 非文本焦点，回退到绑定 TTY: %s", runtime_tty)
                     _inject_into_tty_name(runtime_tty, payload)
@@ -771,7 +776,7 @@ def type_text(text, target_window=None, target_context=None):
                         _type_with_xdotool(active_x11_window, payload, env)
                     return
 
-            if ctx and not ctx.get("terminal_like") and not ctx.get("focus_editable") and not ctx.get("textish"):
+            if ctx and not ignored_focus and not ctx.get("terminal_like") and not ctx.get("focus_editable") and not ctx.get("textish"):
                 raise RuntimeError(
                     f"当前焦点不是输入框 (app={ctx.get('app_name')}, role={ctx.get('focus_role')})"
                 )

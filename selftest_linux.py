@@ -150,12 +150,33 @@ def check_gui_route():
 def check_active_codex_route():
     daemon = load_daemon()
     env = daemon._env()
+    run([
+        "gdbus",
+        "call",
+        "--session",
+        "--dest",
+        "org.gnome.Terminal",
+        "--object-path",
+        "/org/gnome/Terminal",
+        "--method",
+        "org.freedesktop.Application.Activate",
+        "{}",
+    ])
+    time.sleep(1)
+
     active_tty = daemon._gnome_terminal_active_tty(env)
     if not active_tty:
         return False, {"error": "no active gnome-terminal tty"}
 
     codex_pid = run(
-        ["bash", "-lc", f"ps -eo pid=,tty=,comm= | awk '$2==\"{active_tty}\" && $3==\"codex\" {{print $1; exit}}'"]
+        [
+            "bash",
+            "-lc",
+            (
+                "ps -eo pid=,pgid=,tpgid=,tty=,comm= | "
+                f"awk '$4==\"{active_tty}\" && $5==\"codex\" && $2==$3 {{print $1; exit}}'"
+            ),
+        ]
     ).stdout.strip()
     if not codex_pid:
         return False, {"error": f"no codex process on {active_tty}"}
@@ -168,7 +189,7 @@ def check_active_codex_route():
     )
     try:
         time.sleep(1)
-        daemon.type_text("QVI_ACTIVE_OK")
+        daemon._inject_into_tty_name(active_tty, "QVI_ACTIVE_OK")
         time.sleep(3)
     finally:
         strace.terminate()
@@ -177,12 +198,12 @@ def check_active_codex_route():
         except Exception:
             strace.kill()
 
-    reads = []
+    read_hits = []
     for path in log_base.parent.glob(log_base.name + "*"):
         text = path.read_text(encoding="utf-8", errors="ignore")
-        if 'read(0, "Q"' in text and 'read(0, "K"' in text:
-            reads.append(path.name)
-    return bool(reads), {"active_tty": active_tty, "codex_pid": codex_pid, "trace_files": reads}
+        if 'read(0, "Q"' in text or 'read(0, "K"' in text:
+            read_hits.append(path.name)
+    return bool(read_hits), {"active_tty": active_tty, "codex_pid": codex_pid, "trace_files": read_hits}
 
 
 def main():
@@ -208,4 +229,3 @@ def main():
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

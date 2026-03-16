@@ -720,16 +720,26 @@ def type_text(text, target_window=None, target_context=None):
                 except Exception as e:
                     log.warning("Wayland 终端直写失败: %s", e)
 
-            if not ignored_focus and (ctx.get("focus_editable") or ctx.get("textish") or ctx.get("editable")):
+            if not ignored_focus and ctx and not ctx.get("terminal_like"):
                 if _type_with_ydotool(payload, env):
                     return
 
-                if _atspi_insert(env, payload):
+                if (ctx.get("focus_editable") or ctx.get("textish") or ctx.get("editable")) and _atspi_insert(env, payload):
                     log.info("已通过 AT-SPI 注入")
                     return
 
+                active_x11_window = _active_x11_window_id(env)
+                if active_x11_window:
+                    active_x11_pid = _window_pid(active_x11_window, env)
+                    if not ctx.get("pid") or active_x11_pid == int(ctx.get("pid") or 0):
+                        win_name = _window_name(active_x11_window, env).lower()
+                        win_classes = _window_class(active_x11_window, env)
+                        log.info("目标窗口(X11 fallback): %s classes=%s", win_name, ",".join(win_classes) or "unknown")
+                        _type_with_xdotool(active_x11_window, payload, env)
+                        return
+
                 raise RuntimeError(
-                    f"当前焦点看起来像输入框，但注入失败 (app={ctx.get('app_name')}, role={ctx.get('focus_role')})"
+                    f"Wayland GUI 焦点注入失败 (app={ctx.get('app_name')}, role={ctx.get('focus_role')})"
                 )
 
             if active_terminal_has_codex and (ctx.get("terminal_like") or not ctx or ignored_focus):
@@ -757,24 +767,6 @@ def type_text(text, target_window=None, target_context=None):
                     return
                 except Exception as e:
                     log.warning("绑定终端直写失败: %s", e)
-
-            active_x11_window = _active_x11_window_id(env)
-            if active_x11_window:
-                active_x11_pid = _window_pid(active_x11_window, env)
-                # On Wayland, xdotool only sees Xwayland apps. Only trust it if it
-                # matches the accessibility focus, otherwise it may point at an
-                # unrelated stale X11 window and steal terminal input.
-                if not ctx or not ctx.get("pid") or active_x11_pid == int(ctx.get("pid") or 0):
-                    win_name = _window_name(active_x11_window, env).lower()
-                    win_classes = _window_class(active_x11_window, env)
-                    log.info("目标窗口(X11): %s classes=%s", win_name, ",".join(win_classes) or "unknown")
-                    is_terminal = _is_terminal_window(active_x11_window, env)
-                    is_gnome_terminal = any(token in win_classes for token in ["gnome-terminal", "gnome-terminal-server"])
-                    if is_terminal and is_gnome_terminal:
-                        _inject_into_gnome_terminal(active_x11_window, payload, env)
-                    else:
-                        _type_with_xdotool(active_x11_window, payload, env)
-                    return
 
             if ctx and not ignored_focus and not ctx.get("terminal_like") and not ctx.get("focus_editable") and not ctx.get("textish"):
                 raise RuntimeError(

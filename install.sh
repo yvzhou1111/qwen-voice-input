@@ -26,6 +26,8 @@ BIND_TERMINAL_SRC="$REPO_DIR/bind_terminal_linux.sh"
 BIND_TERMINAL_DST="$HOME/.local/bin/qwen-voice-input-bind-terminal"
 TTY_INJECT_SRC="$REPO_DIR/tty_inject_linux.py"
 TTY_INJECT_DST="/usr/local/bin/qwen-voice-input-tty-inject"
+CAPTURE_TARGET_SRC="$REPO_DIR/capture_target_linux.py"
+CAPTURE_TARGET_DST="$HOME/.local/bin/qwen-voice-input-capture-target"
 SERVICE_DST="$HOME/.config/systemd/user/${SERVICE_NAME}.service"
 HEALTH_SERVICE_DST="$HOME/.config/systemd/user/${SERVICE_NAME}-health.service"
 HEALTH_TIMER_DST="$HOME/.config/systemd/user/${SERVICE_NAME}-health.timer"
@@ -99,7 +101,6 @@ install_python_deps() {
 import importlib.util, sys
 required = [
     'sounddevice', 'scipy', 'numpy', 'pynput',
-    'torch', 'transformers', 'huggingface_hub', 'qwen_asr',
     'openai'
 ]
 missing = [name for name in required if importlib.util.find_spec(name) is None]
@@ -113,37 +114,8 @@ PY
     info "安装 Python 依赖..."
     "$python" -m pip install --upgrade pip --quiet
     "$python" -m pip install \
-        sounddevice scipy numpy pynput transformers huggingface_hub requests openai \
+        sounddevice scipy numpy pynput requests openai \
         --quiet
-
-    if ! "$python" -c "import torch" &>/dev/null 2>&1; then
-        info "安装 torch..."
-        "$python" -m pip install torch --quiet
-    fi
-
-    # 安装 qwen_asr
-    if ! "$python" -c "import qwen_asr" &>/dev/null 2>&1; then
-        info "安装 qwen_asr..."
-        "$python" -m pip install qwen-asr --quiet || \
-        "$python" -m pip install git+https://github.com/QwenLM/Qwen3-ASR.git --quiet || \
-        warn "qwen_asr 安装失败，请手动安装: pip install qwen-asr"
-    fi
-}
-
-# ── 预下载模型到本地缓存 ──────────────────────────────
-prefetch_model() {
-    local python="$1"
-    if [ "${QWEN_VOICE_BACKEND:-local}" != "local" ]; then
-        info "QWEN_VOICE_BACKEND!=local，跳过模型预下载"
-        return
-    fi
-    info "检查本地模型缓存..."
-    "$python" - <<'PY'
-from huggingface_hub import snapshot_download
-
-path = snapshot_download("Qwen/Qwen3-ASR-0.6B")
-print(f"MODEL_CACHE={path}")
-PY
 }
 
 # ── 安装 daemon ───────────────────────────────────────
@@ -173,6 +145,13 @@ install_terminal_bind_script() {
     mkdir -p "$HOME/.local/bin"
     cp "$BIND_TERMINAL_SRC" "$BIND_TERMINAL_DST"
     chmod +x "$BIND_TERMINAL_DST"
+}
+
+install_target_capture_script() {
+    info "安装目标快照脚本..."
+    mkdir -p "$HOME/.local/bin"
+    cp "$CAPTURE_TARGET_SRC" "$CAPTURE_TARGET_DST"
+    chmod +x "$CAPTURE_TARGET_DST"
 }
 
 install_tty_inject_helper() {
@@ -290,7 +269,7 @@ install_service() {
 
     cat > "$SERVICE_DST" <<EOF
 [Unit]
-Description=Qwen3-ASR 语音输入守护进程
+Description=Qwen API 语音输入守护进程
 After=graphical-session.target sound.target pipewire.service pipewire-pulse.service
 Wants=graphical-session.target
 StartLimitIntervalSec=300
@@ -367,10 +346,10 @@ main() {
     install_deps
     PYTHON=$(detect_python)
     install_python_deps "$PYTHON"
-    prefetch_model "$PYTHON"
     install_daemon "$PYTHON"
     install_atspi_helper
     install_terminal_bind_script
+    install_target_capture_script
     install_tty_inject_helper
     install_healthcheck "$PYTHON"
     install_clipboard_history "$PYTHON"

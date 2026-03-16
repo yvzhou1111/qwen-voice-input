@@ -12,6 +12,7 @@ from pathlib import Path
 from evdev import InputDevice, ecodes, list_devices
 
 SERVICE_NAME = "qwen-voice-input.service"
+CAPTURE_TARGET = ".local/bin/qwen-voice-input-capture-target"
 CTRL_KEYS = {ecodes.KEY_LEFTCTRL, ecodes.KEY_RIGHTCTRL}
 ALT_KEYS = {ecodes.KEY_LEFTALT, ecodes.KEY_RIGHTALT}
 SPACE_KEYS = {ecodes.KEY_SPACE}
@@ -51,6 +52,24 @@ def _run_user_systemctl(user, uid, home_dir, *args):
     return subprocess.run(cmd, capture_output=True, text=True, check=False)
 
 
+def _run_user_command(user, uid, home_dir, *cmd):
+    env = {
+        "XDG_RUNTIME_DIR": f"/run/user/{uid}",
+        "DBUS_SESSION_BUS_ADDRESS": f"unix:path=/run/user/{uid}/bus",
+        "HOME": home_dir,
+    }
+    full_cmd = [
+        "runuser",
+        "-u",
+        user,
+        "--",
+        "env",
+        *[f"{k}={v}" for k, v in env.items()],
+        *cmd,
+    ]
+    return subprocess.run(full_cmd, capture_output=True, text=True, check=False)
+
+
 def _ensure_service_running(user, uid, home_dir):
     state = _run_user_systemctl(user, uid, home_dir, "is-active", SERVICE_NAME).stdout.strip()
     if state == "active":
@@ -75,6 +94,9 @@ def _heartbeat_ready(heartbeat_path: Path):
 
 
 def _send_signal(user, uid, home_dir, heartbeat_path: Path, sig_name: str):
+    if sig_name == "USR1":
+        capture_path = str(Path(home_dir) / CAPTURE_TARGET)
+        _run_user_command(user, uid, home_dir, capture_path)
     ok, started_now = _ensure_service_running(user, uid, home_dir)
     if not ok:
         return
@@ -179,4 +201,3 @@ def main():
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

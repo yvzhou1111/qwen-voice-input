@@ -1,12 +1,12 @@
 # Qwen Voice Input
 
-基于 [Qwen3-ASR](https://huggingface.co/Qwen/Qwen3-ASR-0.6B) 的本地语音输入工具。按住 `Ctrl+Alt+Space` 录音，松开后自动将识别结果输入到当前焦点窗口。
+基于 DashScope/OpenAI-compatible ASR API 的语音输入工具。按住 `Ctrl+Alt+Space` 录音，松开后自动将识别结果输入到当前焦点窗口。
 
-- 完全本地运行，无需联网，无数据上传
+- 使用远程 API 识别语音
 - 无弹窗，无痕输入
 - 不使用剪贴板注入（不会污染剪贴板）
 - 支持 Linux（GNOME Wayland / X11）和 Windows
-- 可选远程后端（OpenAI-compatible / DashScope），用于替代本地模型
+- 当前实现使用 OpenAI-compatible / DashScope 后端
 
 ## 安装
 
@@ -37,7 +37,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 | 按住 `Ctrl+Alt+Space` | 开始录音 |
 | 松开 | 停止录音，自动识别并输入 |
 
-首次启动需要下载模型（约 1.5GB），之后离线使用。
+首次使用前需要在 `~/.config/qwen-voice-input.env` 中配置 `DASHSCOPE_API_KEY`。
 
 ## 系统要求
 

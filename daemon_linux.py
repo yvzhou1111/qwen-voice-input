@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Qwen3-ASR 语音输入守护进程 - Linux
+Qwen API 语音输入守护进程 - Linux
 快捷键: Ctrl+Alt+Space 按住录音，松开转文字并输入
 """
 
@@ -26,8 +26,7 @@ import scipy.signal as sps
 warnings.filterwarnings("ignore", message=".*RequestsDependencyWarning.*")
 
 # ── 配置 ──────────────────────────────────────────────
-LOCAL_MODEL_NAME = "Qwen/Qwen3-ASR-0.6B"
-ASR_BACKEND = os.environ.get("QWEN_VOICE_BACKEND", "local").strip().lower()
+ASR_BACKEND = os.environ.get("QWEN_VOICE_BACKEND", "dashscope_openai").strip().lower()
 REMOTE_MODEL_NAME = os.environ.get("QWEN_VOICE_REMOTE_MODEL", "qwen3-asr-flash").strip() or "qwen3-asr-flash"
 REMOTE_BASE_URL = os.environ.get(
     "QWEN_VOICE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -47,6 +46,7 @@ DEDICATED_TERMINAL_TITLE = "Qwen Voice Input"
 STATE_DIR = os.path.expanduser("~/.local/state/qwen-voice-input")
 HEARTBEAT_PATH = os.path.join(STATE_DIR, "heartbeat.json")
 TARGET_TTY_STATE_PATH = os.path.join(STATE_DIR, "target_tty")
+TARGET_SNAPSHOT_PATH = os.path.join(STATE_DIR, "target_snapshot.json")
 ATSPI_HELPER = os.environ.get(
     "QWEN_VOICE_ATSPI_HELPER",
     os.path.expanduser("~/.local/bin/qwen-voice-input-atspi"),
@@ -61,6 +61,7 @@ TTY_INJECT_HELPER = os.environ.get(
     "/usr/local/bin/qwen-voice-input-tty-inject",
 ).strip() or "/usr/local/bin/qwen-voice-input-tty-inject"
 CODEX_TTY_CHAR_DELAY_MS = float(os.environ.get("QWEN_VOICE_CODEX_TTY_CHAR_DELAY_MS", "20"))
+TARGET_SNAPSHOT_MAX_AGE = float(os.environ.get("QWEN_VOICE_TARGET_SNAPSHOT_MAX_AGE", "3"))
 IGNORED_FOCUS_APPS = {
     "qwen-clipboard-history",
     "cc-switch",
@@ -122,6 +123,16 @@ def _runtime_target_tty():
             return None
         value = open(TARGET_TTY_STATE_PATH, "r", encoding="utf-8").read().strip()
         return _normalize_tty_name(value) or None
+    except Exception:
+        return None
+
+
+def _runtime_target_snapshot():
+    try:
+        st = os.stat(TARGET_SNAPSHOT_PATH)
+        if time.time() - st.st_mtime > TARGET_SNAPSHOT_MAX_AGE:
+            return None
+        return json.loads(open(TARGET_SNAPSHOT_PATH, "r", encoding="utf-8").read())
     except Exception:
         return None
 
@@ -719,7 +730,7 @@ def _type_with_xdotool(window_id, text, env):
     )
 
 
-def type_text(text, target_window=None, target_context=None):
+def type_text(text, target_window=None, target_context=None, target_tty=None):
     env = _env()
     payload = text.replace("\r", " ").replace("\n", " ").replace("\t", " ")
     if not payload.strip():
@@ -729,7 +740,7 @@ def type_text(text, target_window=None, target_context=None):
         if _session_type() == "wayland":
             ctx = target_context or _atspi_focus_info(env) or {}
             ignored_focus = (ctx.get("app_name") or "").lower() in IGNORED_FOCUS_APPS
-            runtime_tty = _runtime_target_tty()
+            runtime_tty = _normalize_tty_name(target_tty or "") or _runtime_target_tty()
             active_terminal_tty = _gnome_terminal_active_tty(env)
             active_terminal_has_codex = bool(active_terminal_tty and _tty_foreground_is_codex(active_terminal_tty))
             if ctx.get("terminal_like") and ctx.get("pid"):
@@ -815,23 +826,6 @@ def type_text(text, target_window=None, target_context=None):
         log.error("type_text error: %s", e)
 
 
-def _resolve_model_path():
-    try:
-        from huggingface_hub import snapshot_download
-    except Exception:
-        return LOCAL_MODEL_NAME
-
-    try:
-        model_dir = snapshot_download(LOCAL_MODEL_NAME, local_files_only=True)
-        log.info("使用本地模型缓存: %s", model_dir)
-        return model_dir
-    except Exception as e:
-        log.warning("本地模型缓存未命中，将尝试联网下载: %s", e)
-        model_dir = snapshot_download(LOCAL_MODEL_NAME)
-        log.info("模型已缓存到: %s", model_dir)
-        return model_dir
-
-
 def _pick_input_device():
     try:
         info = sd.query_devices("default", "input")
@@ -871,6 +865,7 @@ class VoiceInputDaemon:
         self._busy         = False
         self.target_window = None
         self.target_context = None
+        self.target_tty    = None
         self.record_rate   = RECORD_RATE
         self._stop_event   = threading.Event()
 
@@ -882,6 +877,7 @@ class VoiceInputDaemon:
                     "busy": self._busy,
                     "target_window": self.target_window,
                     "target_context": self.target_context,
+                    "target_tty": self.target_tty,
                 })
             except Exception as e:
                 log.warning("写入心跳失败: %s", e)
@@ -907,41 +903,10 @@ class VoiceInputDaemon:
         log.info("ITN: %s", REMOTE_ENABLE_ITN)
 
     def load_model(self):
-        if self.backend == "dashscope_openai":
-            self._load_remote_client()
-            return
-
-        if self.backend != "local":
+        if self.backend != "dashscope_openai":
             log.error("不支持的 ASR 后端: %s", self.backend)
             sys.exit(1)
-
-        log.info("后端: local")
-        log.info("正在加载模型 %s ...", LOCAL_MODEL_NAME)
-        try:
-            import torch
-            from qwen_asr import Qwen3ASRModel
-
-            device = "cuda:0" if torch.cuda.is_available() else "cpu"
-            dtype  = torch.float16 if torch.cuda.is_available() else torch.float32
-            log.info("设备: %s  dtype: %s", device, dtype)
-
-            self.model = Qwen3ASRModel.from_pretrained(
-                _resolve_model_path(), dtype=dtype, device_map=device, max_new_tokens=128
-            )
-
-            if torch.cuda.is_available():
-                try:
-                    self.model.model = torch.compile(self.model.model, mode="reduce-overhead")
-                    log.info("torch.compile 已启用")
-                except Exception as ce:
-                    log.warning("torch.compile 跳过: %s", ce)
-
-            dummy = np.zeros(TARGET_RATE, dtype=np.float32)
-            self.model.transcribe((dummy, TARGET_RATE), language=None)
-            log.info("模型加载完成（已预热）")
-        except Exception as e:
-            log.error("模型加载失败: %s", e)
-            sys.exit(1)
+        self._load_remote_client()
 
     def _transcribe_remote(self, audio):
         request = {
@@ -1002,23 +967,28 @@ class VoiceInputDaemon:
             self.audio_buf = []
             try:
                 env = _env()
+                snapshot = _runtime_target_snapshot() or {}
                 if _session_type() == "wayland":
                     self.target_window = None
-                    self.target_context = _atspi_focus_info(env)
+                    self.target_context = snapshot.get("focus") or _atspi_focus_info(env)
+                    self.target_tty = _normalize_tty_name(snapshot.get("tty") or "") or None
                 else:
                     self.target_window = subprocess.run(
                         ["xdotool", "getactivewindow"],
                         capture_output=True, text=True, env=env, timeout=2
                     ).stdout.strip()
                     self.target_context = None
+                    self.target_tty = None
             except Exception:
                 self.target_window = None
                 self.target_context = None
+                self.target_tty = None
             _write_heartbeat({
                 "recording": True,
                 "busy": self._busy,
                 "target_window": self.target_window,
                 "target_context": self.target_context,
+                "target_tty": self.target_tty,
             })
         log.info("开始录音，目标窗口: %s", self.target_window)
 
@@ -1033,10 +1003,11 @@ class VoiceInputDaemon:
                 "busy": True,
                 "target_window": self.target_window,
                 "target_context": self.target_context,
+                "target_tty": self.target_tty,
             })
-        threading.Thread(target=self._transcribe, args=(buf, self.target_window, self.target_context), daemon=True).start()
+        threading.Thread(target=self._transcribe, args=(buf, self.target_window, self.target_context, self.target_tty), daemon=True).start()
 
-    def _transcribe(self, buf, target_window=None, target_context=None):
+    def _transcribe(self, buf, target_window=None, target_context=None, target_tty=None):
         self._busy = True
         try:
             if len(buf) < 5:
@@ -1051,22 +1022,12 @@ class VoiceInputDaemon:
                 audio = audio / peak * 0.9
 
             t0 = time.time()
-            if self.backend == "dashscope_openai":
-                text = self._transcribe_remote(audio)
-            else:
-                result = self.model.transcribe((audio, TARGET_RATE), language=None)
-                text = ""
-                if isinstance(result, list):
-                    text = " ".join(r.text for r in result if hasattr(r, "text")).strip()
-                elif isinstance(result, dict):
-                    text = result.get("text", "").strip()
-                elif isinstance(result, str):
-                    text = result.strip()
+            text = self._transcribe_remote(audio)
             log.info("推理耗时: %.3f 秒", time.time() - t0)
 
             log.info("识别结果: %s", text)
             if text:
-                type_text(text, target_window, target_context)
+                type_text(text, target_window, target_context, target_tty)
         except Exception as e:
             log.error("转写错误: %s", e)
         finally:
@@ -1076,6 +1037,7 @@ class VoiceInputDaemon:
                 "busy": False,
                 "target_window": self.target_window,
                 "target_context": self.target_context,
+                "target_tty": self.target_tty,
             })
 
     def _on_press(self, key):
@@ -1117,7 +1079,7 @@ class VoiceInputDaemon:
 
         def _shutdown(sig, frame):
             self._stop_event.set()
-            _write_heartbeat({"status": "stopping", "recording": self.recording, "busy": self._busy, "target_context": self.target_context})
+            _write_heartbeat({"status": "stopping", "recording": self.recording, "busy": self._busy, "target_context": self.target_context, "target_tty": self.target_tty})
             self.stream.stop()
             sys.exit(0)
 
